@@ -1,5 +1,6 @@
 name: Termux/Magisk Optimized Build
-'on':
+
+on:
   workflow_dispatch:
     inputs:
       version:
@@ -9,31 +10,27 @@ name: Termux/Magisk Optimized Build
 
 jobs:
   termux_build:
-    # 理论上 Linux runner 就可以进行 dotnet publish
     runs-on: ubuntu-latest 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4 # 修复弃用问题
 
-      # 1. 安装 .NET 8 (核心构建环境)
-      - name: setup dotnet8
-        uses: actions/setup-dotnet@v2
+      # 1. 设置 .NET 8 SDK
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
-          
-      # 2. 安装 Alpine Linux / Musl toolchain (用于静态链接或提取依赖)
-      # 为了获取 libz, libgcc, libstdc++ 等 Musl 版本依赖
-      - name: Install Alpine/Musl toolchain
-        run: |
-          sudo apt-get update
-          # 在 Ubuntu 上安装 qemu-user-static 以支持 arm64 交叉编译环境
-          sudo apt-get install -y qemu-user-static debootstrap
-          # 假设我们需要一个 Musl 库的源
-          # 实际操作中，可能需要在 Docker 或 Proot 环境中提取 Musl 库，这里使用简化的 apt 示例
-          
+
+      # 2. 设置 Docker QEMU (用于后续的 Musl 镜像操作)
+      - name: Set up QEMU and Docker Buildx
+        uses: docker/setup-qemu-action@v3
+
       # 3. 核心程序构建 (使用 Musl ARM64 目标)
       - name: Publish Musl ARM64 executable
         run: |
-          # 参考 publish.bat 的 dotnet 命令，针对 linux-musl-arm64
+          # 确保构建目录存在
+          mkdir -p ./public/publish/linux-musl-arm64/linker
+          
+          # dotnet publish 命令，针对 linux-musl-arm64
           dotnet publish src/linker -c Release -f net8.0 -o ./public/publish/linux-musl-arm64/linker \
             -r linux-musl-arm64 \
             -p:PublishSingleFile=true \
@@ -42,31 +39,49 @@ jobs:
             -p:InvariantGlobalization=true \
             -p:StackTraceSupport=false \
             -p:DebuggerSupport=false \
-            -p:MetricsSupport=false \
-            # **关键改进：尝试完全静态链接**
-            # **注：dotnet 很难实现完全静态链接，但这是最佳尝试**
+            -p:MetricsSupport=false
 
-      # 4. 准备 Magisk/Termux 依赖包
-      - name: Prepare Magisk dependencies (Musl Linker & Libraries)
-        id: prepare_deps
+      # 4. 准备 Magisk/Termux 依赖包并提取库 (关键修复！)
+      - name: Prepare Magisk Dependencies (Extracting Libraries)
         run: |
-          # 这一步需要在构建环境中提取 Musl 链接器和缺失的库
-          mkdir -p ./public/magisk-pkg/bin
-          mkdir -p ./public/magisk-pkg/lib
+          MAGISK_PKG_DIR="./public/magisk-pkg"
+          PUBLISH_DIR="./public/publish/linux-musl-arm64/linker"
+          MUSL_IMAGE="mcr.microsoft.com/dotnet/sdk:8.0-alpine-arm64v8"
           
-          # 假设在构建环境中能获取 ld-musl 链接器（需要复杂的 Alpine/Docker 设置才能得到）
-          # 假设我们从某个 Musl 工具链中获得了 ld-musl-aarch64.so.1
-          # [这里应有脚本来复制 ld-musl-aarch64.so.1, libz.so.1, libgcc_s.so.1, libstdc++.so.6]
+          # 创建 Magisk 包结构
+          mkdir -p $MAGISK_PKG_DIR/bin
+          mkdir -p $MAGISK_PKG_DIR/lib
           
-          # 暂时先复制核心程序
-          cp ./public/publish/linux-musl-arm64/linker/linker ./public/magisk-pkg/bin/
+          # 复制核心程序
+          cp $PUBLISH_DIR/linker $MAGISK_PKG_DIR/bin/
           
-          # 创建一个安装包 (例如 tar.gz)
-          tar -czvf ./public/linker-magisk-${{ github.event.inputs.version }}.tar.gz -C ./public/magisk-pkg .
+          # --- 提取 Musl 依赖库 ---
+          echo "Starting Docker extraction of Musl dependencies..."
+          CONTAINER_ID=$(docker create $MUSL_IMAGE)
           
+          # 1. Musl C 库 (作为动态链接器) -> 命名为 ld-musl-aarch64.so.1
+          docker cp $CONTAINER_ID:/lib/libc.musl-aarch64.so.1 $MAGISK_PKG_DIR/lib/ld-musl-aarch64.so.1
+          
+          # 2. Zlib (libz.so.1)
+          docker cp $CONTAINER_ID:/lib/libz.so.1 $MAGISK_PKG_DIR/lib/
+          
+          # 3. GCC Runtime (libgcc_s.so.1)
+          docker cp $CONTAINER_ID:/usr/lib/libgcc_s.so.1 $MAGISK_PKG_DIR/lib/
+          
+          # 4. C++ Runtime (libstdc++.so.6)
+          # 注意：/usr/lib/libstdc++.so.6 可能是符号链接，docker cp 会尝试复制目标文件。
+          docker cp $CONTAINER_ID:/usr/lib/libstdc++.so.6 $MAGISK_PKG_DIR/lib/
+          
+          # 清理临时容器
+          docker rm $CONTAINER_ID
+          
+          # --- 打包最终文件 ---
+          echo "Packaging final artifact..."
+          tar -czvf ./public/linker-magisk-${{ github.event.inputs.version }}.tar.gz -C $MAGISK_PKG_DIR .
+
       # 5. 上传产物
       - name: Upload Termux/Magisk Package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4 # 修复弃用问题
         with:
-          name: linker-magisk-package
+          name: linker-magisk-package-${{ github.event.inputs.version }}
           path: ./public/linker-magisk-${{ github.event.inputs.version }}.tar.gz
