@@ -1,4 +1,4 @@
-Name: Fully Static Linking Attempt (Musl)
+name: Fully Static Linking Attempt (Musl)
 
 'on':
   workflow_dispatch:
