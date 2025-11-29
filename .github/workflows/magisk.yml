@@ -18,7 +18,7 @@ jobs:
       options: --user root # 确保有权限安装依赖和执行
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       # 1. 安装构建所需的额外依赖
       - name: Install Build Dependencies (Alpine)
