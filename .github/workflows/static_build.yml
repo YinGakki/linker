@@ -1,0 +1,88 @@
+name: Linker Musl Static Build
+
+on:
+  # 允许手动触发工作流
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Linker version tag (e.g., v1.9.6)'
+        required: true
+        default: 'v1.9.6'
+
+jobs:
+  static_build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # 1. 代码检出
+      - name: Checkout Code
+        uses: actions/checkout@v4 # 使用 V4 修复弃用问题
+
+      # 2. 设置 .NET SDK
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      # 3. 设置 QEMU 和 Docker Buildx 以支持 ARM64 交叉编译
+      # 即使我们不直接用 Dockerfile，这个步骤也能在 Runner 上启用 ARM64 仿真支持
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 4. 安装 Musl C/C++ 工具链依赖
+      # Musl 交叉编译需要额外的工具链
+      - name: Install Musl Build Dependencies
+        run: |
+          sudo apt-get update
+          # 安装必要的 GCC/G++ 工具链和 Musl 交叉编译头文件/库
+          sudo apt-get install -y build-essential musl-tools zlib1g-dev
+
+      # 5. 核心程序构建 - 最大化静态链接
+      - name: Publish Musl ARM64 Static Executable
+        run: |
+          # 使用 linux-musl-arm64 RID 和自包含发布。
+          # -p:PublishSingleFile=true: 将所有内容打包到一个文件。
+          # --self-contained true: 包含 .NET 运行时。
+          # -p:InvariantGlobalization=true: 减少全球化依赖，减小体积。
+          # -p:ExtraLinkerFlags="-static-libstdc++": 尝试强制静态链接 C++ 库，解决符号找不到问题。
+          
+          dotnet publish src/linker -c Release -f net8.0 -o ${{ runner.temp }}/publish \
+            -r linux-musl-arm64 \
+            -p:PublishSingleFile=true \
+            --self-contained true \
+            -p:InvariantGlobalization=true \
+            -p:TrimMode=partial \
+            -p:ExtraLinkerFlags="-static-libstdc++" \
+            -p:DebuggerSupport=false \
+            -p:MetricsSupport=false \
+            -p:StackTraceSupport=false
+            
+      # 6. 检查并打包最终产物
+      - name: Check and Package Binary
+        shell: bash
+        run: |
+          BUILD_PATH="${{ runner.temp }}/publish"
+          OUTPUT_FILE="linker-static-musl-arm64"
+          VERSION="${{ github.event.inputs.version }}"
+          
+          # 复制最终生成的可执行文件
+          cp "${BUILD_PATH}/linker" "${OUTPUT_FILE}"
+          
+          echo "--- Checking binary details (ldd should ideally fail or be empty) ---"
+          # ldd 检查依赖 (在宿主机上运行，可能会因为是 Musl 文件而报错，但有助于诊断)
+          ldd "${OUTPUT_FILE}" || true
+          
+          echo "--- Packaging ---"
+          # 压缩最终文件 (Magisk/Termux 用户通常使用 tar.gz)
+          tar -czvf linker-static-${VERSION}.tar.gz "${OUTPUT_FILE}"
+          
+      # 7. 上传产物
+      - name: Upload Static Package Artifact
+        uses: actions/upload-artifact@v4 # 使用 V4 修复弃用问题
+        with:
+          name: linker-musl-arm64-${{ github.event.inputs.version }}
+          path: linker-static-${{ github.event.inputs.version }}.tar.gz
+          retention-days: 7
