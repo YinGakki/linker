@@ -64,7 +64,7 @@ jobs:
           
       # 4. 上传产物
       - name: Upload Static Package
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: linker-static-musl-package
           path: linker-static-${{ github.event.inputs.version }}.tar.gz
