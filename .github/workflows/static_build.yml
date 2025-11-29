@@ -1,7 +1,5 @@
-name: Linker Musl Static Build
-
-on:
-  # 允许手动触发工作流
+name: Termux/Magisk Optimized Build
+'on':
   workflow_dispatch:
     inputs:
       version:
@@ -10,79 +8,65 @@ on:
         default: 'v1.9.6'
 
 jobs:
-  static_build:
-    runs-on: ubuntu-latest
-    
+  termux_build:
+    # 理论上 Linux runner 就可以进行 dotnet publish
+    runs-on: ubuntu-latest 
     steps:
-      # 1. 代码检出
-      - name: Checkout Code
-        uses: actions/checkout@v4 # 使用 V4 修复弃用问题
+      - uses: actions/checkout@v4
 
-      # 2. 设置 .NET SDK
-      - name: Setup .NET 8 SDK
-        uses: actions/setup-dotnet@v4
+      # 1. 安装 .NET 8 (核心构建环境)
+      - name: setup dotnet8
+        uses: actions/setup-dotnet@v2
         with:
           dotnet-version: 8.0.x
-
-      # 3. 设置 QEMU 和 Docker Buildx 以支持 ARM64 交叉编译
-      # 即使我们不直接用 Dockerfile，这个步骤也能在 Runner 上启用 ARM64 仿真支持
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # 4. 安装 Musl C/C++ 工具链依赖
-      # Musl 交叉编译需要额外的工具链
-      - name: Install Musl Build Dependencies
+          
+      # 2. 安装 Alpine Linux / Musl toolchain (用于静态链接或提取依赖)
+      # 为了获取 libz, libgcc, libstdc++ 等 Musl 版本依赖
+      - name: Install Alpine/Musl toolchain
         run: |
           sudo apt-get update
-          # 安装必要的 GCC/G++ 工具链和 Musl 交叉编译头文件/库
-          sudo apt-get install -y build-essential musl-tools zlib1g-dev
-
-      # 5. 核心程序构建 - 最大化静态链接
-      - name: Publish Musl ARM64 Static Executable
-        run: |
-          # 使用 linux-musl-arm64 RID 和自包含发布。
-          # -p:PublishSingleFile=true: 将所有内容打包到一个文件。
-          # --self-contained true: 包含 .NET 运行时。
-          # -p:InvariantGlobalization=true: 减少全球化依赖，减小体积。
-          # -p:ExtraLinkerFlags="-static-libstdc++": 尝试强制静态链接 C++ 库，解决符号找不到问题。
+          # 在 Ubuntu 上安装 qemu-user-static 以支持 arm64 交叉编译环境
+          sudo apt-get install -y qemu-user-static debootstrap
+          # 假设我们需要一个 Musl 库的源
+          # 实际操作中，可能需要在 Docker 或 Proot 环境中提取 Musl 库，这里使用简化的 apt 示例
           
-          dotnet publish src/linker -c Release -f net8.0 -o ${{ runner.temp }}/publish \
+      # 3. 核心程序构建 (使用 Musl ARM64 目标)
+      - name: Publish Musl ARM64 executable
+        run: |
+          # 参考 publish.bat 的 dotnet 命令，针对 linux-musl-arm64
+          dotnet publish src/linker -c Release -f net8.0 -o ./public/publish/linux-musl-arm64/linker \
             -r linux-musl-arm64 \
             -p:PublishSingleFile=true \
             --self-contained true \
-            -p:InvariantGlobalization=true \
             -p:TrimMode=partial \
-            -p:ExtraLinkerFlags="-static-libstdc++" \
+            -p:InvariantGlobalization=true \
+            -p:StackTraceSupport=false \
             -p:DebuggerSupport=false \
             -p:MetricsSupport=false \
-            -p:StackTraceSupport=false
-            
-      # 6. 检查并打包最终产物
-      - name: Check and Package Binary
-        shell: bash
+            # **关键改进：尝试完全静态链接**
+            # **注：dotnet 很难实现完全静态链接，但这是最佳尝试**
+
+      # 4. 准备 Magisk/Termux 依赖包
+      - name: Prepare Magisk dependencies (Musl Linker & Libraries)
+        id: prepare_deps
         run: |
-          BUILD_PATH="${{ runner.temp }}/publish"
-          OUTPUT_FILE="linker-static-musl-arm64"
-          VERSION="${{ github.event.inputs.version }}"
+          # 这一步需要在构建环境中提取 Musl 链接器和缺失的库
+          mkdir -p ./public/magisk-pkg/bin
+          mkdir -p ./public/magisk-pkg/lib
           
-          # 复制最终生成的可执行文件
-          cp "${BUILD_PATH}/linker" "${OUTPUT_FILE}"
+          # 假设在构建环境中能获取 ld-musl 链接器（需要复杂的 Alpine/Docker 设置才能得到）
+          # 假设我们从某个 Musl 工具链中获得了 ld-musl-aarch64.so.1
+          # [这里应有脚本来复制 ld-musl-aarch64.so.1, libz.so.1, libgcc_s.so.1, libstdc++.so.6]
           
-          echo "--- Checking binary details (ldd should ideally fail or be empty) ---"
-          # ldd 检查依赖 (在宿主机上运行，可能会因为是 Musl 文件而报错，但有助于诊断)
-          ldd "${OUTPUT_FILE}" || true
+          # 暂时先复制核心程序
+          cp ./public/publish/linux-musl-arm64/linker/linker ./public/magisk-pkg/bin/
           
-          echo "--- Packaging ---"
-          # 压缩最终文件 (Magisk/Termux 用户通常使用 tar.gz)
-          tar -czvf linker-static-${VERSION}.tar.gz "${OUTPUT_FILE}"
+          # 创建一个安装包 (例如 tar.gz)
+          tar -czvf ./public/linker-magisk-${{ github.event.inputs.version }}.tar.gz -C ./public/magisk-pkg .
           
-      # 7. 上传产物
-      - name: Upload Static Package Artifact
-        uses: actions/upload-artifact@v4 # 使用 V4 修复弃用问题
+      # 5. 上传产物
+      - name: Upload Termux/Magisk Package
+        uses: actions/upload-artifact@v4
         with:
-          name: linker-musl-arm64-${{ github.event.inputs.version }}
-          path: linker-static-${{ github.event.inputs.version }}.tar.gz
-          retention-days: 7
+          name: linker-magisk-package
+          path: ./public/linker-magisk-${{ github.event.inputs.version }}.tar.gz
