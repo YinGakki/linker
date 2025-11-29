@@ -46,7 +46,10 @@ jobs:
         run: |
           MAGISK_PKG_DIR="./public/magisk-pkg"
           PUBLISH_DIR="./public/publish/linux-musl-arm64/linker"
-          MUSL_IMAGE="mcr.microsoft.com/dotnet/sdk:8.0-alpine-arm64v8"
+          
+          # **关键修改：使用标准的 Alpine 镜像来提取库**
+          # **使用 alpine:3.18-arm64v8 作为源，并安装所需的库**
+          MUSL_BASE_IMAGE="alpine/git:2.45.0-r0" # 这是一个包含常用工具的 Alpine 镜像，确保有 apk
           
           # 创建 Magisk 包结构
           mkdir -p $MAGISK_PKG_DIR/bin
@@ -57,22 +60,29 @@ jobs:
           
           # --- 提取 Musl 依赖库 ---
           echo "Starting Docker extraction of Musl dependencies..."
-          CONTAINER_ID=$(docker create $MUSL_IMAGE)
           
-          # 1. Musl C 库 (作为动态链接器) -> 命名为 ld-musl-aarch64.so.1
+          # 1. 创建容器并安装缺失的依赖
+          # 我们需要 zlib-dev (提供 libz.so.1) 和 g++ (提供 libstdc++.so.6 和 libgcc_s.so.1)
+          CONTAINER_ID=$(docker create $MUSL_BASE_IMAGE)
+          
+          # 启动容器并在内部安装依赖
+          docker start $CONTAINER_ID
+          docker exec $CONTAINER_ID apk add --no-cache zlib-dev libstdc++
+          
+          # 2. Musl C 库 (作为动态链接器) -> 命名为 ld-musl-aarch64.so.1
           docker cp $CONTAINER_ID:/lib/libc.musl-aarch64.so.1 $MAGISK_PKG_DIR/lib/ld-musl-aarch64.so.1
           
-          # 2. Zlib (libz.so.1)
-          docker cp $CONTAINER_ID:/lib/libz.so.1 $MAGISK_PKG_DIR/lib/
+          # 3. Zlib (libz.so.1)
+          # 在 Alpine 中，libz.so.1 通常在 /lib 或 /usr/lib
+          docker cp $CONTAINER_ID:/usr/lib/libz.so.1 $MAGISK_PKG_DIR/lib/
           
-          # 3. GCC Runtime (libgcc_s.so.1)
+          # 4. C++ Runtime (libstdc++.so.6) 和 GCC Runtime (libgcc_s.so.1)
+          # 这些库在安装 libstdc++ 包后位于 /usr/lib
+          docker cp $CONTAINER_ID:/usr/lib/libstdc++.so.6 $MAGISK_PKG_DIR/lib/
           docker cp $CONTAINER_ID:/usr/lib/libgcc_s.so.1 $MAGISK_PKG_DIR/lib/
           
-          # 4. C++ Runtime (libstdc++.so.6)
-          # 注意：/usr/lib/libstdc++.so.6 可能是符号链接，docker cp 会尝试复制目标文件。
-          docker cp $CONTAINER_ID:/usr/lib/libstdc++.so.6 $MAGISK_PKG_DIR/lib/
-          
           # 清理临时容器
+          docker stop $CONTAINER_ID
           docker rm $CONTAINER_ID
           
           # --- 打包最终文件 ---
