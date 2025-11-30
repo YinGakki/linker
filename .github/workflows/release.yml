@@ -40,35 +40,43 @@ jobs:
             -p:PublishSingleFile=true \
             -o ./linker_output
             
-      - name: 4. Download Latest Rurima-AIO Template (FINAL FIX)
+      - name: 4. Download Latest Rurima-AIO Template (FIXED for .tar)
         id: get_rurima_release
         run: |
           echo "Fetching latest Rurima-AIO release URL..."
           
-          # 策略：只查找所有以 ".zip" 结尾的附件，并取第一个。
-          RURIMA_LATEST_URL=$(curl -sfL https://api.github.com/repos/RuriOSS/rurima-aio/releases/latest | \
-            jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url' | head -n 1)
+          JSON_RESPONSE=$(curl -sfL https://api.github.com/repos/RuriOSS/rurima-aio/releases/latest)
+          
+          echo "--- Rurima-AIO Asset Diagnostics ---"
+          echo "$JSON_RESPONSE" | jq '.assets[] | {name: .name, url: .browser_download_url}'
+          echo "-------------------------------------"
+          
+          # 策略：查找所有以 ".tar" 结尾的附件，并取第一个 URL。
+          RURIMA_LATEST_URL=$(echo "$JSON_RESPONSE" | \
+            jq -r '.assets[] | select(.name | endswith(".tar")) | .browser_download_url' | head -n 1)
           
           if [ -z "$RURIMA_LATEST_URL" ]; then
-            echo "::error title=Rurima-AIO Asset Not Found::Could not find a .zip asset in the latest RuriOSS/rurima-aio release."
-            echo "Please check the release page manually to verify the asset name and URL."
+            echo "::error title=Rurima-AIO Asset Not Found::Could not find a .tar asset in the latest RuriOSS/rurima-aio release."
+            echo "Action Failed. Please check the logs above to confirm the correct file extension."
             exit 1
           fi
           
           echo "Found URL: $RURIMA_LATEST_URL"
           echo "RURIMA_LATEST_URL=$RURIMA_LATEST_URL" >> $GITHUB_OUTPUT
-          wget -O rurima-aio.zip "$RURIMA_LATEST_URL"
+          
+          # 下载文件，并保存为 .tar 格式
+          wget -O rurima-aio.tar "$RURIMA_LATEST_URL"
 
-      - name: 5. Prepare Module Structure (Unzip Template)
+      - name: 5. Prepare Module Structure (Extract Tarball)
         run: |
-          unzip rurima-aio.zip -d module_template
-          
-          MODULE_ROOT_DIR=$(ls module_template | head -n 1)
-          MODULE_PATH="module_template/$MODULE_ROOT_DIR"
-          
+          # 1. 创建模块集成目录
           mkdir linker_mod
-          mv "$MODULE_PATH"/* linker_mod/
           
+          # 2. 使用 tar 命令解压文件到 linker_mod
+          # --strip-components=1 用于移除 tarball 顶层目录，直接提取内容。
+          tar -xf rurima-aio.tar -C linker_mod --strip-components=1
+          
+          # 3. 替换模块 ID (重要)
           sed -i 's/^id=.*/id=linker_rurima/g' linker_mod/module.prop
 
       - name: 6. Integrate Linker Binary and Wrapper Script
@@ -78,7 +86,6 @@ jobs:
           
           cp linker_output/linker "$MODULE_BIN_DIR/"
           
-          # 使用 printf 创建脚本
           printf '#!/system/bin/sh\n' > "$WRAPPER_FILE"
           printf '# 包装器确保 linker 在 rurima 兼容层中运行\n' >> "$WRAPPER_FILE"
           printf '\n' >> "$WRAPPER_FILE"
@@ -105,6 +112,7 @@ jobs:
           
           echo "Building module version: $VERSION"
           
+          # 压缩最终的 Magisk 模块 (仍然使用 ZIP 格式用于 Magisk 安装)
           cd linker_mod
           zip -qr ../linker_magisk_mod-${VERSION}.zip .
           cd ..
