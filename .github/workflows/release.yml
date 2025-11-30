@@ -32,7 +32,6 @@ jobs:
       
       - name: 3. Compile Linker (Self-Contained Single File for ARM64)
         run: |
-          # 编译 Linker
           dotnet publish src/linker \
             -c Release \
             -f net8.0 \
@@ -41,9 +40,7 @@ jobs:
             -p:PublishSingleFile=true \
             -o ./linker_output
             
-      # --- 移除步骤 4: 不再下载 Rurima 模板 ---
-
-      - name: 5. Create Magisk Module Structure and Files (NEW)
+      - name: 5. Create Magisk Module Structure and Files (YAML FIXED)
         run: |
           MODULE_DIR="linker_mod"
           
@@ -51,7 +48,8 @@ jobs:
           mkdir -p $MODULE_DIR/system/bin
           
           # 创建 module.prop 文件
-          cat > $MODULE_DIR/module.prop << 'EOF'
+          # 注意：EOF 标记必须紧贴左侧，这是避免 YAML 错误的必需步骤。
+          cat > $MODULE_DIR/module.prop << EOF
 id=linker_rurima
 name=Linker Runner Module
 versionCode=1
@@ -71,12 +69,12 @@ EOF
         run: |
           MODULE_BIN_DIR="linker_mod/system/bin"
           WRAPPER_FILE="$MODULE_BIN_DIR/linker-wrapper"
-          LINKER_BIN_NAME="linker" # 原始 Linker 名称
+          LINKER_BIN_NAME="linker"
           
-          # A. 移动 Linker 二进制文件到系统路径
+          mkdir -p "$MODULE_BIN_DIR"
+
           cp linker_output/$LINKER_BIN_NAME "$MODULE_BIN_DIR/$LINKER_BIN_NAME"
           
-          # B. 使用 printf 创建 Linker 启动包装器脚本
           printf '#!/system/bin/sh\n' > "$WRAPPER_FILE"
           printf '# 包装器确保 linker 在 rurima 兼容层中运行\n' >> "$WRAPPER_FILE"
           printf '\n' >> "$WRAPPER_FILE"
@@ -84,16 +82,13 @@ EOF
           printf 'LINKER_BIN="/system/bin/%s"\n' "$LINKER_BIN_NAME" >> "$WRAPPER_FILE"
           printf '\n' >> "$WRAPPER_FILE"
           printf 'if [ -x "$RURIMA_BIN" ]; then\n' >> "$WRAPPER_FILE"
-          printf '    # 使用 rurima 启动 linker，并传递所有参数\n' >> "$WRAPPER_FILE"
           printf '    exec "$RURIMA_BIN" "$LINKER_BIN" "$@"\n' >> "$WRAPPER_FILE"
           printf 'else\n' >> "$WRAPPER_FILE"
-          printf '    # 警告：如果 rurima 不可用，直接执行将失败 (ABI 冲突)\n' >> "$WRAPPER_FILE"
           printf '    exec "$LINKER_BIN" "$@"\n' >> "$WRAPPER_FILE"
           printf 'fi\n' >> "$WRAPPER_FILE"
           printf '\n' >> "$WRAPPER_FILE"
           printf 'exit 0\n' >> "$WRAPPER_FILE"
           
-          # C. 赋予 wrapper 脚本执行权限
           chmod 755 "$WRAPPER_FILE"
           chmod 755 "$MODULE_BIN_DIR/$LINKER_BIN_NAME"
           
