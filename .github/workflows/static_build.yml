@@ -1,4 +1,4 @@
-name: Termux/Magisk Optimized Build (Self-Contained)
+name: Termux/Magisk Optimized Build (Self-Contained Musl)
 
 on:
   workflow_dispatch:
@@ -20,17 +20,17 @@ jobs:
         with:
           dotnet-version: 8.0.x
           
-      # 2. 核心程序构建 (自包含单文件动态链接 - 最可靠的方法)
-      - name: Publish Glibc ARM64 Self-Contained executable
+      # 2. 核心程序构建 (自包含单文件动态链接 - Musl 目标)
+      - name: Publish Musl ARM64 Self-Contained executable
         run: |
           # 确保构建目录存在
-          mkdir -p ./public/publish/linux-arm64/linker
+          mkdir -p ./public/publish/linux-musl-arm64/linker
           
-          # 切换到 linux-arm64 目标。使用 PublishSingleFile 和 Self-Contained。
-          # 这是最可靠的方式，因为它将整个 .NET 运行时打包到文件中，不依赖外部 C 库。
-          echo "Starting Self-Contained Single-File compilation (Target: linux-arm64 Glibc)..."
-          dotnet publish src/linker -c Release -f net8.0 -o ./public/publish/linux-arm64/linker \
-            -r linux-arm64 \
+          # 最终尝试：使用 linux-musl-arm64 RID进行单文件自包含编译
+          # 这种组合绕过了 AOT 链接问题，并可能解决 Bionic TLS 冲突。
+          echo "Starting Self-Contained Single-File compilation (Target: linux-musl-arm64)..."
+          dotnet publish src/linker -c Release -f net8.0 -o ./public/publish/linux-musl-arm64/linker \
+            -r linux-musl-arm64 \
             -p:PublishSingleFile=true \
             --self-contained true \
             -p:TrimMode=partial \
@@ -44,22 +44,21 @@ jobs:
       - name: Prepare Magisk Package (Single Binary Only)
         run: |
           MAGISK_PKG_DIR="./public/magisk-pkg"
-          PUBLISH_DIR="./public/publish/linux-arm64/linker"
+          PUBLISH_DIR="./public/publish/linux-musl-arm64/linker"
           
           # 创建 Magisk 包结构
           mkdir -p $MAGISK_PKG_DIR/bin
           
           # 复制核心程序
-          # 注意：虽然是单文件，但它仍然需要正确的权限才能启动内部的运行时
           cp $PUBLISH_DIR/linker $MAGISK_PKG_DIR/bin/
           
           # --- 打包最终文件 ---
           echo "Packaging final static artifact..."
-          tar -czvf ./public/linker-magisk-selfcontained-${{ github.event.inputs.version }}.tar.gz -C ./public/magisk-pkg .
+          tar -czvf ./public/linker-magisk-selfcontained-musl-${{ github.event.inputs.version }}.tar.gz -C ./public/magisk-pkg .
 
       # 4. 上传产物
       - name: Upload Termux/Magisk Package
         uses: actions/upload-artifact@v4
         with:
-          name: linker-magisk-selfcontained-package-${{ github.event.inputs.version }}
-          path: ./public/linker-magisk-selfcontained-${{ github.event.inputs.version }}.tar.gz
+          name: linker-magisk-selfcontained-musl-package-${{ github.event.inputs.version }}
+          path: ./public/linker-magisk-selfcontained-musl-${{ github.event.inputs.version }}.tar.gz
