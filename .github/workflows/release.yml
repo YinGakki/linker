@@ -10,7 +10,6 @@ jobs:
   build_module:
     runs-on: ubuntu-latest
     
-    # 启用 umask，以确保脚本和二进制文件具有正确的 Magisk 权限
     defaults:
       run:
         shell: bash
@@ -27,7 +26,6 @@ jobs:
       - name: 3. Compile Linker (Self-Contained Single File for ARM64)
         run: |
           # 编译 Linker，生成 linux-arm64 平台下自包含的单文件
-          # 适用于 Rurima-AIO 提供的 Glibc 兼容层
           dotnet publish src/linker \
             -c Release \
             -f net8.0 \
@@ -36,14 +34,10 @@ jobs:
             -p:PublishSingleFile=true \
             -o ./linker_output
             
-          # 确认 Linker 二进制文件存在
-          ls -l linker_output/linker
-          
       - name: 4. Download Latest Rurima-AIO Template
         id: get_rurima_release
         run: |
           # 查找 RuriOSS/rurima-aio 仓库的最新发布版本 ZIP 包链接
-          # 使用 jq 解析 GitHub API 响应
           RURIMA_LATEST_URL=$(curl -s https://api.github.com/repos/RuriOSS/rurima-aio/releases/latest | jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url')
           
           if [ -z "$RURIMA_LATEST_URL" ]; then
@@ -59,15 +53,15 @@ jobs:
           # 解压 Rurima 模板到 module_template 目录
           unzip rurima-aio.zip -d module_template
           
-          # Magisk 模块 ZIP 中通常只有一个根目录，找到它
+          # 找到模块根目录
           MODULE_ROOT_DIR=$(ls module_template | head -n 1)
           MODULE_PATH="module_template/$MODULE_ROOT_DIR"
           
-          # 创建新的模块集成目录
+          # 创建新的模块集成目录并移动内容
           mkdir linker_mod
           mv "$MODULE_PATH"/* linker_mod/
           
-          # 替换模块 ID 以避免冲突 (可选，但推荐)
+          # 替换模块 ID (重要)
           sed -i 's/^id=.*/id=linker_rurima/g' linker_mod/module.prop
 
       - name: 6. Integrate Linker Binary and Wrapper Script
@@ -77,9 +71,11 @@ jobs:
           # A. 移动 Linker 二进制文件到系统路径
           cp linker_output/linker "$MODULE_BIN_DIR/"
           
-          # B. 创建 Linker 启动包装器脚本 (linker-wrapper)
-          # 使用 'EOF' 块来确保脚本内容完整性
-          cat << 'EOF' > "$MODULE_BIN_DIR/linker-wrapper"
+          # B. 创建 Linker 启动包装器脚本
+          echo "Creating linker-wrapper script..."
+          
+          # 使用 'echo' 配合 '|' 符号创建脚本内容
+          cat > "$MODULE_BIN_DIR/linker-wrapper" << 'SCRIPT_EOF'
 #!/system/bin/sh
 # 包装器确保 linker 在 rurima 兼容层中运行
 
@@ -95,7 +91,7 @@ else
 fi
 
 exit 0
-EOF
+SCRIPT_EOF
           
           # C. 赋予 wrapper 脚本执行权限
           chmod 755 "$MODULE_BIN_DIR/linker-wrapper"
@@ -106,7 +102,6 @@ EOF
           VERSION=$(echo ${{ github.ref }} | sed 's/refs\/tags\///g')
           
           # 压缩最终的 Magisk 模块
-          # 注意：压缩时必须在父目录执行，以确保 ZIP 文件结构正确
           cd linker_mod
           zip -qr ../linker_magisk_mod-${VERSION}.zip .
           cd ..
@@ -115,7 +110,7 @@ EOF
         uses: softprops/action-gh-release@v2
         with:
           files: linker_magisk_mod-*.zip
-          prerelease: false # 设置为 true 用于预发布版本
+          prerelease: false
           body: |
             ## Linker Magisk 模块 v${{ github.ref_name }}
             
