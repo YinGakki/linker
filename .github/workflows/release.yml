@@ -64,37 +64,33 @@ jobs:
           # 替换模块 ID (重要)
           sed -i 's/^id=.*/id=linker_rurima/g' linker_mod/module.prop
 
-      - name: 6. Integrate Linker Binary and Wrapper Script
+      - name: 6. Integrate Linker Binary and Wrapper Script (FIXED)
         run: |
           MODULE_BIN_DIR="linker_mod/system/bin"
+          WRAPPER_FILE="$MODULE_BIN_DIR/linker-wrapper"
           
           # A. 移动 Linker 二进制文件到系统路径
           cp linker_output/linker "$MODULE_BIN_DIR/"
           
-          # B. 创建 Linker 启动包装器脚本
-          echo "Creating linker-wrapper script..."
-          
-          # 使用 'echo' 配合 '|' 符号创建脚本内容
-          cat > "$MODULE_BIN_DIR/linker-wrapper" << 'SCRIPT_EOF'
-#!/system/bin/sh
-# 包装器确保 linker 在 rurima 兼容层中运行
-
-RURIMA_BIN="/system/bin/rurima"
-LINKER_BIN="/system/bin/linker"
-
-if [ -x "$RURIMA_BIN" ]; then
-    # 使用 rurima 启动 linker，并传递所有参数
-    exec "$RURIMA_BIN" "$LINKER_BIN" "$@"
-else
-    # 警告：如果 rurima 不可用，直接执行将失败 (ABI 冲突)
-    exec "$LINKER_BIN" "$@"
-fi
-
-exit 0
-SCRIPT_EOF
+          # B. 使用 printf 创建 Linker 启动包装器脚本 (这是最安全的 YAML 兼容方法)
+          printf '#!/system/bin/sh\n' > "$WRAPPER_FILE"
+          printf '# 包装器确保 linker 在 rurima 兼容层中运行\n' >> "$WRAPPER_FILE"
+          printf '\n' >> "$WRAPPER_FILE"
+          printf 'RURIMA_BIN="/system/bin/rurima"\n' >> "$WRAPPER_FILE"
+          printf 'LINKER_BIN="/system/bin/linker"\n' >> "$WRAPPER_FILE"
+          printf '\n' >> "$WRAPPER_FILE"
+          printf 'if [ -x "$RURIMA_BIN" ]; then\n' >> "$WRAPPER_FILE"
+          printf '    # 使用 rurima 启动 linker，并传递所有参数\n' >> "$WRAPPER_FILE"
+          printf '    exec "$RURIMA_BIN" "$LINKER_BIN" "$@"\n' >> "$WRAPPER_FILE"
+          printf 'else\n' >> "$WRAPPER_FILE"
+          printf '    # 警告：如果 rurima 不可用，直接执行将失败 (ABI 冲突)\n' >> "$WRAPPER_FILE"
+          printf '    exec "$LINKER_BIN" "$@"\n' >> "$WRAPPER_FILE"
+          printf 'fi\n' >> "$WRAPPER_FILE"
+          printf '\n' >> "$WRAPPER_FILE"
+          printf 'exit 0\n' >> "$WRAPPER_FILE"
           
           # C. 赋予 wrapper 脚本执行权限
-          chmod 755 "$MODULE_BIN_DIR/linker-wrapper"
+          chmod 755 "$WRAPPER_FILE"
           
       - name: 7. Finalize and Zip Module
         run: |
