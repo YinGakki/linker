@@ -4,9 +4,8 @@ name: Magisk Module Build and Release
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+' # 保留标签推送触发
+      - 'v[0-9]+.[0-9]+.[0-9]+'
   
-  # 新增：启用手动执行
   workflow_dispatch:
     inputs:
       version:
@@ -33,7 +32,6 @@ jobs:
       
       - name: 3. Compile Linker (Self-Contained Single File for ARM64)
         run: |
-          # 编译 Linker，生成 linux-arm64 平台下自包含的单文件
           dotnet publish src/linker \
             -c Release \
             -f net8.0 \
@@ -42,19 +40,18 @@ jobs:
             -p:PublishSingleFile=true \
             -o ./linker_output
             
-      - name: 4. Download Latest Rurima-AIO Template (ULTIMATE FIX)
+      - name: 4. Download Latest Rurima-AIO Template (FINAL FIX)
         id: get_rurima_release
         run: |
           echo "Fetching latest Rurima-AIO release URL..."
           
-          # 使用 curl -sfL: -s (静默), -f (失败时返回错误), -L (跟随重定向)
-          # 使用更灵活的 jq 过滤器：查找名称包含 "rurima" 或 "magisk" 且以 "zip" 结尾的资产
+          # 策略：只查找所有以 ".zip" 结尾的附件，并取第一个。
           RURIMA_LATEST_URL=$(curl -sfL https://api.github.com/repos/RuriOSS/rurima-aio/releases/latest | \
-            jq -r '.assets[] | select(.name | test("zip$"; "i") and (.name | test("rurima|magisk"; "i"))) | .browser_download_url' | head -n 1)
+            jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url' | head -n 1)
           
           if [ -z "$RURIMA_LATEST_URL" ]; then
-            echo "Error: Could not find latest Rurima-AIO release ZIP URL."
-            echo "Attempted URL filters failed. Please manually verify the asset name in the RuriOSS/rurima-aio latest release."
+            echo "::error title=Rurima-AIO Asset Not Found::Could not find a .zip asset in the latest RuriOSS/rurima-aio release."
+            echo "Please check the release page manually to verify the asset name and URL."
             exit 1
           fi
           
@@ -64,18 +61,14 @@ jobs:
 
       - name: 5. Prepare Module Structure (Unzip Template)
         run: |
-          # 解压 Rurima 模板到 module_template 目录
           unzip rurima-aio.zip -d module_template
           
-          # 找到模块根目录
           MODULE_ROOT_DIR=$(ls module_template | head -n 1)
           MODULE_PATH="module_template/$MODULE_ROOT_DIR"
           
-          # 创建新的模块集成目录并移动内容
           mkdir linker_mod
           mv "$MODULE_PATH"/* linker_mod/
           
-          # 替换模块 ID (重要)
           sed -i 's/^id=.*/id=linker_rurima/g' linker_mod/module.prop
 
       - name: 6. Integrate Linker Binary and Wrapper Script
@@ -83,10 +76,9 @@ jobs:
           MODULE_BIN_DIR="linker_mod/system/bin"
           WRAPPER_FILE="$MODULE_BIN_DIR/linker-wrapper"
           
-          # A. 移动 Linker 二进制文件到系统路径
           cp linker_output/linker "$MODULE_BIN_DIR/"
           
-          # B. 使用 printf 创建 Linker 启动包装器脚本 (最安全的 YAML 兼容方法)
+          # 使用 printf 创建脚本
           printf '#!/system/bin/sh\n' > "$WRAPPER_FILE"
           printf '# 包装器确保 linker 在 rurima 兼容层中运行\n' >> "$WRAPPER_FILE"
           printf '\n' >> "$WRAPPER_FILE"
@@ -94,40 +86,32 @@ jobs:
           printf 'LINKER_BIN="/system/bin/linker"\n' >> "$WRAPPER_FILE"
           printf '\n' >> "$WRAPPER_FILE"
           printf 'if [ -x "$RURIMA_BIN" ]; then\n' >> "$WRAPPER_FILE"
-          printf '    # 使用 rurima 启动 linker，并传递所有参数\n' >> "$WRAPPER_FILE"
           printf '    exec "$RURIMA_BIN" "$LINKER_BIN" "$@"\n' >> "$WRAPPER_FILE"
           printf 'else\n' >> "$WRAPPER_FILE"
-          printf '    # 警告：如果 rurima 不可用，直接执行将失败 (ABI 冲突)\n' >> "$WRAPPER_FILE"
           printf '    exec "$LINKER_BIN" "$@"\n' >> "$WRAPPER_FILE"
           printf 'fi\n' >> "$WRAPPER_FILE"
           printf '\n' >> "$WRAPPER_FILE"
           printf 'exit 0\n' >> "$WRAPPER_FILE"
           
-          # C. 赋予 wrapper 脚本执行权限
           chmod 755 "$WRAPPER_FILE"
           
       - name: 7. Finalize and Zip Module
         run: |
-          # 根据触发事件确定版本号
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            # 手动触发时，使用输入参数作为版本
             VERSION="${{ github.event.inputs.version }}"
           else
-            # 标签触发时，从标签中提取版本
             VERSION=$(echo ${{ github.ref }} | sed 's/refs\/tags\///g')
           fi
           
           echo "Building module version: $VERSION"
           
-          # 压缩最终的 Magisk 模块
           cd linker_mod
           zip -qr ../linker_magisk_mod-${VERSION}.zip .
-          cd 说
+          cd ..
           
       - name: 8. Create GitHub Release and Upload Asset
         uses: softprops/action-gh-release@v2
         with:
-          # 使用步骤 7 确定的版本号
           tag_name: ${{ github.event_name == 'workflow_dispatch' && format('manual-{0}', github.event.inputs.version) || github.ref }}
           files: linker_magisk_mod-*.zip
           prerelease: false
