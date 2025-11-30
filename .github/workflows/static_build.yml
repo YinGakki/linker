@@ -41,7 +41,7 @@ jobs:
             -p:DebuggerSupport=false \
             -p:MetricsSupport=false
 
-      # 4. 准备 Magisk/Termux 依赖包并提取库 (关键修复！)
+      # 4. 准备 Magisk/Termux 依赖包并提取库 (关键修复：libz.so.1 路径)
       - name: Prepare Magisk Dependencies (Extracting Libraries)
         run: |
           MAGISK_PKG_DIR="./public/magisk-pkg"
@@ -58,8 +58,7 @@ jobs:
           # --- 提取 Musl 依赖库 ---
           echo "Starting Docker extraction of Musl dependencies..."
           
-          # 1. 启动持久运行容器 (修复 'container is not running' 错误)
-          # 使用 docker run -d 和 tail -f /dev/null 保证 ARM64 容器在 QEMU 下保持运行。
+          # 1. 启动持久运行容器
           CONTAINER_ID=$(docker run -d --platform linux/arm64 $MUSL_BASE_IMAGE tail -f /dev/null)
           
           if [ -z "$CONTAINER_ID" ]; then
@@ -74,10 +73,11 @@ jobs:
           # 2. Musl C 库 (作为动态链接器) -> 命名为 ld-musl-aarch64.so.1
           docker cp $CONTAINER_ID:/lib/libc.musl-aarch64.so.1 $MAGISK_PKG_DIR/lib/ld-musl-aarch64.so.1
           
-          # 3. Zlib (libz.so.1)
-          docker cp $CONTAINER_ID:/usr/lib/libz.so.1 $MAGISK_PKG_DIR/lib/
+          # 3. Zlib (libz.so.1) - 路径修正为 /lib/
+          docker cp $CONTAINER_ID:/lib/libz.so.1 $MAGISK_PKG_DIR/lib/
           
           # 4. C++ Runtime (libstdc++.so.6) 和 GCC Runtime (libgcc_s.so.1)
+          # 这些位于 /usr/lib 是正确的
           docker cp $CONTAINER_ID:/usr/lib/libstdc++.so.6 $MAGISK_PKG_DIR/lib/
           docker cp $CONTAINER_ID:/usr/lib/libgcc_s.so.1 $MAGISK_PKG_DIR/lib/
           
