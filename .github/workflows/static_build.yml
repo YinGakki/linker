@@ -48,8 +48,8 @@ jobs:
           PUBLISH_DIR="./public/publish/linux-musl-arm64/linker"
           
           # **关键修改：使用标准的 Alpine 镜像来提取库**
-          # **使用 alpine:3.18-arm64v8 作为源，并安装所需的库**
-          MUSL_BASE_IMAGE="alpine/git:2.45.0-r0" # 这是一个包含常用工具的 Alpine 镜像，确保有 apk
+          # 修复了 manifest not found 错误
+          MUSL_BASE_IMAGE="alpine:3.18" # 使用稳定、多架构的 Alpine 基础镜像
           
           # 创建 Magisk 包结构
           mkdir -p $MAGISK_PKG_DIR/bin
@@ -62,22 +62,21 @@ jobs:
           echo "Starting Docker extraction of Musl dependencies..."
           
           # 1. 创建容器并安装缺失的依赖
-          # 我们需要 zlib-dev (提供 libz.so.1) 和 g++ (提供 libstdc++.so.6 和 libgcc_s.so.1)
+          # 我们需要 zlib-dev (提供 libz.so.1) 和 libstdc++ (提供 libstdc++.so.6 和 libgcc_s.so.1)
           CONTAINER_ID=$(docker create $MUSL_BASE_IMAGE)
           
           # 启动容器并在内部安装依赖
           docker start $CONTAINER_ID
-          docker exec $CONTAINER_ID apk add --no-cache zlib-dev libstdc++
+          # 运行 apk update 和 apk add
+          docker exec $CONTAINER_ID sh -c "apk update && apk add --no-cache zlib-dev libstdc++"
           
           # 2. Musl C 库 (作为动态链接器) -> 命名为 ld-musl-aarch64.so.1
           docker cp $CONTAINER_ID:/lib/libc.musl-aarch64.so.1 $MAGISK_PKG_DIR/lib/ld-musl-aarch64.so.1
           
           # 3. Zlib (libz.so.1)
-          # 在 Alpine 中，libz.so.1 通常在 /lib 或 /usr/lib
           docker cp $CONTAINER_ID:/usr/lib/libz.so.1 $MAGISK_PKG_DIR/lib/
           
           # 4. C++ Runtime (libstdc++.so.6) 和 GCC Runtime (libgcc_s.so.1)
-          # 这些库在安装 libstdc++ 包后位于 /usr/lib
           docker cp $CONTAINER_ID:/usr/lib/libstdc++.so.6 $MAGISK_PKG_DIR/lib/
           docker cp $CONTAINER_ID:/usr/lib/libgcc_s.so.1 $MAGISK_PKG_DIR/lib/
           
