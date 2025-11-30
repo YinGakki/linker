@@ -1,4 +1,4 @@
-name: Termux/Magisk Optimized Build (Static AOT)
+name: Termux/Magisk Optimized Build (Self-Contained)
 
 on:
   workflow_dispatch:
@@ -20,42 +20,46 @@ jobs:
         with:
           dotnet-version: 8.0.x
           
-      # 2. 核心程序构建 (强制 AOT 静态编译)
-      - name: Publish Glibc ARM64 Static AOT executable
+      # 2. 核心程序构建 (自包含单文件动态链接 - 最可靠的方法)
+      - name: Publish Glibc ARM64 Self-Contained executable
         run: |
           # 确保构建目录存在
           mkdir -p ./public/publish/linux-arm64/linker
           
-          # 切换到 linux-arm64 目标（使用更健壮的 Glibc 环境进行 AOT 编译）
-          echo "Starting static AOT compilation (Target: linux-arm64 Glibc)..."
+          # 切换到 linux-arm64 目标。使用 PublishSingleFile 和 Self-Contained。
+          # 这是最可靠的方式，因为它将整个 .NET 运行时打包到文件中，不依赖外部 C 库。
+          echo "Starting Self-Contained Single-File compilation (Target: linux-arm64 Glibc)..."
           dotnet publish src/linker -c Release -f net8.0 -o ./public/publish/linux-arm64/linker \
             -r linux-arm64 \
+            -p:PublishSingleFile=true \
+            --self-contained true \
             -p:TrimMode=partial \
             -p:InvariantGlobalization=true \
             -p:StackTraceSupport=false \
             -p:DebuggerSupport=false \
-            -p:MetricsSupport=false \
-            -p:PublishAot=true  # <--- 保持 AOT 静态链接
+            -p:MetricsSupport=false 
+            # 移除了 PublishAot=true
           
-      # 3. 准备 Magisk/Termux 最终包 (只包含可执行文件)
-      - name: Prepare Magisk Package (Static Binary Only)
+      # 3. 准备 Magisk/Termux 最终包 (只包含一个可执行文件)
+      - name: Prepare Magisk Package (Single Binary Only)
         run: |
           MAGISK_PKG_DIR="./public/magisk-pkg"
-          PUBLISH_DIR="./public/publish/linux-arm64/linker" # 路径已更新为 linux-arm64
+          PUBLISH_DIR="./public/publish/linux-arm64/linker"
           
           # 创建 Magisk 包结构
           mkdir -p $MAGISK_PKG_DIR/bin
           
           # 复制核心程序
+          # 注意：虽然是单文件，但它仍然需要正确的权限才能启动内部的运行时
           cp $PUBLISH_DIR/linker $MAGISK_PKG_DIR/bin/
           
           # --- 打包最终文件 ---
           echo "Packaging final static artifact..."
-          tar -czvf ./public/linker-magisk-static-glibc-${{ github.event.inputs.version }}.tar.gz -C ./public/magisk-pkg .
+          tar -czvf ./public/linker-magisk-selfcontained-${{ github.event.inputs.version }}.tar.gz -C ./public/magisk-pkg .
 
       # 4. 上传产物
       - name: Upload Termux/Magisk Package
         uses: actions/upload-artifact@v4
         with:
-          name: linker-magisk-static-glibc-package-${{ github.event.inputs.version }}
-          path: ./public/linker-magisk-static-glibc-${{ github.event.inputs.version }}.tar.gz
+          name: linker-magisk-selfcontained-package-${{ github.event.inputs.version }}
+          path: ./public/linker-magisk-selfcontained-${{ github.event.inputs.version }}.tar.gz
