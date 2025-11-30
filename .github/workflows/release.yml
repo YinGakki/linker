@@ -1,0 +1,126 @@
+# 工作流名称：Magisk 模块自动发布 (Linker + Rurima-AIO 集成)
+name: Magisk Module Build and Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+' # 仅在推送版本标签（例如 v1.0.0）时触发
+
+jobs:
+  build_module:
+    runs-on: ubuntu-latest
+    
+    # 启用 umask，以确保脚本和二进制文件具有正确的 Magisk 权限
+    defaults:
+      run:
+        shell: bash
+        
+    steps:
+      - name: 1. Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 2. Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      
+      - name: 3. Compile Linker (Self-Contained Single File for ARM64)
+        run: |
+          # 编译 Linker，生成 linux-arm64 平台下自包含的单文件
+          # 适用于 Rurima-AIO 提供的 Glibc 兼容层
+          dotnet publish src/linker \
+            -c Release \
+            -f net8.0 \
+            -r linux-arm64 \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -o ./linker_output
+            
+          # 确认 Linker 二进制文件存在
+          ls -l linker_output/linker
+          
+      - name: 4. Download Latest Rurima-AIO Template
+        id: get_rurima_release
+        run: |
+          # 查找 RuriOSS/rurima-aio 仓库的最新发布版本 ZIP 包链接
+          # 使用 jq 解析 GitHub API 响应
+          RURIMA_LATEST_URL=$(curl -s https://api.github.com/repos/RuriOSS/rurima-aio/releases/latest | jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url')
+          
+          if [ -z "$RURIMA_LATEST_URL" ]; then
+            echo "Error: Could not find latest Rurima-AIO release ZIP URL."
+            exit 1
+          fi
+          
+          echo "RURIMA_LATEST_URL=$RURIMA_LATEST_URL" >> $GITHUB_OUTPUT
+          wget -O rurima-aio.zip "$RURIMA_LATEST_URL"
+
+      - name: 5. Prepare Module Structure (Unzip Template)
+        run: |
+          # 解压 Rurima 模板到 module_template 目录
+          unzip rurima-aio.zip -d module_template
+          
+          # Magisk 模块 ZIP 中通常只有一个根目录，找到它
+          MODULE_ROOT_DIR=$(ls module_template | head -n 1)
+          MODULE_PATH="module_template/$MODULE_ROOT_DIR"
+          
+          # 创建新的模块集成目录
+          mkdir linker_mod
+          mv "$MODULE_PATH"/* linker_mod/
+          
+          # 替换模块 ID 以避免冲突 (可选，但推荐)
+          sed -i 's/^id=.*/id=linker_rurima/g' linker_mod/module.prop
+
+      - name: 6. Integrate Linker Binary and Wrapper Script
+        run: |
+          MODULE_BIN_DIR="linker_mod/system/bin"
+          
+          # A. 移动 Linker 二进制文件到系统路径
+          cp linker_output/linker "$MODULE_BIN_DIR/"
+          
+          # B. 创建 Linker 启动包装器脚本 (linker-wrapper)
+          # 使用 'EOF' 块来确保脚本内容完整性
+          cat << 'EOF' > "$MODULE_BIN_DIR/linker-wrapper"
+#!/system/bin/sh
+# 包装器确保 linker 在 rurima 兼容层中运行
+
+RURIMA_BIN="/system/bin/rurima"
+LINKER_BIN="/system/bin/linker"
+
+if [ -x "$RURIMA_BIN" ]; then
+    # 使用 rurima 启动 linker，并传递所有参数
+    exec "$RURIMA_BIN" "$LINKER_BIN" "$@"
+else
+    # 警告：如果 rurima 不可用，直接执行将失败 (ABI 冲突)
+    exec "$LINKER_BIN" "$@"
+fi
+
+exit 0
+EOF
+          
+          # C. 赋予 wrapper 脚本执行权限
+          chmod 755 "$MODULE_BIN_DIR/linker-wrapper"
+          
+      - name: 7. Finalize and Zip Module
+        run: |
+          # 获取 Tag 名称作为版本号
+          VERSION=$(echo ${{ github.ref }} | sed 's/refs\/tags\///g')
+          
+          # 压缩最终的 Magisk 模块
+          # 注意：压缩时必须在父目录执行，以确保 ZIP 文件结构正确
+          cd linker_mod
+          zip -qr ../linker_magisk_mod-${VERSION}.zip .
+          cd ..
+          
+      - name: 8. Create GitHub Release and Upload Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: linker_magisk_mod-*.zip
+          prerelease: false # 设置为 true 用于预发布版本
+          body: |
+            ## Linker Magisk 模块 v${{ github.ref_name }}
+            
+            此模块包含以下组件：
+            - **核心程序:** Linker v${{ github.ref_name }} (自包含 .NET 8.0/linux-arm64)
+            - **兼容层:** 基于最新的 RuriOSS/rurima-aio Magisk 模块。
+            
+            **用法:** 重启后，在任何 Shell (ADB 或 Termux su) 中运行 `linker-wrapper`。
