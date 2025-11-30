@@ -26,21 +26,17 @@ jobs:
           # 确保构建目录存在
           mkdir -p ./public/publish/linux-musl-arm64/linker
           
-          # 使用 PublishAot=true 强制进行 AOT 编译，实现完全静态链接 C Runtime
+          # 使用 PublishAot=true 强制进行 AOT 编译。移除了 PublishSingleFile 和 --self-contained
           echo "Starting static AOT compilation..."
           dotnet publish src/linker -c Release -f net8.0 -o ./public/publish/linux-musl-arm64/linker \
             -r linux-musl-arm64 \
-            -p:PublishSingleFile=true \
-            --self-contained true \
             -p:TrimMode=partial \
             -p:InvariantGlobalization=true \
             -p:StackTraceSupport=false \
             -p:DebuggerSupport=false \
             -p:MetricsSupport=false \
-            -p:PublishAot=true  # <--- 关键：强制 AOT 静态链接
+            -p:PublishAot=true  # <--- 保持 AOT 静态链接
           
-          # AOT 编译的产物通常是一个可执行文件，不包含单独的运行时。
-
       # 3. 准备 Magisk/Termux 最终包 (只包含可执行文件)
       - name: Prepare Magisk Package (Static Binary Only)
         run: |
@@ -55,7 +51,6 @@ jobs:
           
           # --- 打包最终文件 ---
           echo "Packaging final static artifact..."
-          # 注意：为了区分，输出的文件名建议修改，如加上 -static
           tar -czvf ./public/linker-magisk-static-${{ github.event.inputs.version }}.tar.gz -C ./public/magisk-pkg .
 
       # 4. 上传产物
