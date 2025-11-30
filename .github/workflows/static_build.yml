@@ -1,4 +1,4 @@
-name: Termux/Magisk Optimized Build
+name: Termux/Magisk Optimized Build (Static AOT)
 
 on:
   workflow_dispatch:
@@ -12,25 +12,22 @@ jobs:
   termux_build:
     runs-on: ubuntu-latest 
     steps:
-      - uses: actions/checkout@v4 # 修复弃用问题
+      - uses: actions/checkout@v4
 
       # 1. 设置 .NET 8 SDK
       - name: Setup .NET 8 SDK
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
-
-      # 2. 设置 Docker QEMU (用于后续的 Musl 镜像操作)
-      - name: Set up QEMU and Docker Buildx
-        uses: docker/setup-qemu-action@v3
-
-      # 3. 核心程序构建 (使用 Musl ARM64 目标)
-      - name: Publish Musl ARM64 executable
+          
+      # 2. 核心程序构建 (强制 AOT 静态编译)
+      - name: Publish Musl ARM64 Static AOT executable
         run: |
           # 确保构建目录存在
           mkdir -p ./public/publish/linux-musl-arm64/linker
           
-          # dotnet publish 命令，针对 linux-musl-arm64
+          # 使用 PublishAot=true 强制进行 AOT 编译，实现完全静态链接 C Runtime
+          echo "Starting static AOT compilation..."
           dotnet publish src/linker -c Release -f net8.0 -o ./public/publish/linux-musl-arm64/linker \
             -r linux-musl-arm64 \
             -p:PublishSingleFile=true \
@@ -39,60 +36,31 @@ jobs:
             -p:InvariantGlobalization=true \
             -p:StackTraceSupport=false \
             -p:DebuggerSupport=false \
-            -p:MetricsSupport=false
+            -p:MetricsSupport=false \
+            -p:PublishAot=true  # <--- 关键：强制 AOT 静态链接
+          
+          # AOT 编译的产物通常是一个可执行文件，不包含单独的运行时。
 
-      # 4. 准备 Magisk/Termux 依赖包并提取库 (关键修复：libz.so.1 路径)
-      - name: Prepare Magisk Dependencies (Extracting Libraries)
+      # 3. 准备 Magisk/Termux 最终包 (只包含可执行文件)
+      - name: Prepare Magisk Package (Static Binary Only)
         run: |
           MAGISK_PKG_DIR="./public/magisk-pkg"
           PUBLISH_DIR="./public/publish/linux-musl-arm64/linker"
-          MUSL_BASE_IMAGE="alpine:3.18"
           
-          # 创建 Magisk 包结构
+          # 创建 Magisk 包结构，不再需要 lib 目录
           mkdir -p $MAGISK_PKG_DIR/bin
-          mkdir -p $MAGISK_PKG_DIR/lib
           
           # 复制核心程序
           cp $PUBLISH_DIR/linker $MAGISK_PKG_DIR/bin/
           
-          # --- 提取 Musl 依赖库 ---
-          echo "Starting Docker extraction of Musl dependencies..."
-          
-          # 1. 启动持久运行容器
-          CONTAINER_ID=$(docker run -d --platform linux/arm64 $MUSL_BASE_IMAGE tail -f /dev/null)
-          
-          if [ -z "$CONTAINER_ID" ]; then
-            echo "Error: Failed to start Docker container."
-            exit 1
-          fi
-
-          # 在容器内部安装依赖
-          echo "Installing dependencies inside container $CONTAINER_ID..."
-          docker exec $CONTAINER_ID sh -c "apk update && apk add --no-cache zlib-dev libstdc++"
-          
-          # 2. Musl C 库 (作为动态链接器) -> 命名为 ld-musl-aarch64.so.1
-          docker cp $CONTAINER_ID:/lib/libc.musl-aarch64.so.1 $MAGISK_PKG_DIR/lib/ld-musl-aarch64.so.1
-          
-          # 3. Zlib (libz.so.1) - 路径修正为 /lib/
-          docker cp $CONTAINER_ID:/lib/libz.so.1 $MAGISK_PKG_DIR/lib/
-          
-          # 4. C++ Runtime (libstdc++.so.6) 和 GCC Runtime (libgcc_s.so.1)
-          # 这些位于 /usr/lib 是正确的
-          docker cp $CONTAINER_ID:/usr/lib/libstdc++.so.6 $MAGISK_PKG_DIR/lib/
-          docker cp $CONTAINER_ID:/usr/lib/libgcc_s.so.1 $MAGISK_PKG_DIR/lib/
-          
-          # 清理临时容器
-          echo "Stopping and removing container $CONTAINER_ID..."
-          docker stop $CONTAINER_ID
-          docker rm $CONTAINER_ID
-          
           # --- 打包最终文件 ---
-          echo "Packaging final artifact..."
-          tar -czvf ./public/linker-magisk-${{ github.event.inputs.version }}.tar.gz -C $MAGISK_PKG_DIR .
+          echo "Packaging final static artifact..."
+          # 注意：为了区分，输出的文件名建议修改，如加上 -static
+          tar -czvf ./public/linker-magisk-static-${{ github.event.inputs.version }}.tar.gz -C ./public/magisk-pkg .
 
-      # 5. 上传产物
+      # 4. 上传产物
       - name: Upload Termux/Magisk Package
-        uses: actions/upload-artifact@v4 # 修复弃用问题
+        uses: actions/upload-artifact@v4
         with:
-          name: linker-magisk-package-${{ github.event.inputs.version }}
-          path: ./public/linker-magisk-${{ github.event.inputs.version }}.tar.gz
+          name: linker-magisk-static-package-${{ github.event.inputs.version }}
+          path: ./public/linker-magisk-static-${{ github.event.inputs.version }}.tar.gz
