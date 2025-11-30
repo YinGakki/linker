@@ -42,19 +42,19 @@ jobs:
             -p:PublishSingleFile=true \
             -o ./linker_output
             
-      - name: 4. Download Latest Rurima-AIO Template (FIXED)
+      - name: 4. Download Latest Rurima-AIO Template (ULTIMATE FIX)
         id: get_rurima_release
         run: |
           echo "Fetching latest Rurima-AIO release URL..."
           
-          # 查找 RuriOSS/rurima-aio 仓库的最新发布版本 ZIP 包链接。
-          # 使用 head -n 1 确保即使 jq 返回多行也只取第一个URL。
-          RURIMA_LATEST_URL=$(curl -s https://api.github.com/repos/RuriOSS/rurima-aio/releases/latest | \
-            jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url' | head -n 1)
+          # 使用 curl -sfL: -s (静默), -f (失败时返回错误), -L (跟随重定向)
+          # 使用更灵活的 jq 过滤器：查找名称包含 "rurima" 或 "magisk" 且以 "zip" 结尾的资产
+          RURIMA_LATEST_URL=$(curl -sfL https://api.github.com/repos/RuriOSS/rurima-aio/releases/latest | \
+            jq -r '.assets[] | select(.name | test("zip$"; "i") and (.name | test("rurima|magisk"; "i"))) | .browser_download_url' | head -n 1)
           
           if [ -z "$RURIMA_LATEST_URL" ]; then
             echo "Error: Could not find latest Rurima-AIO release ZIP URL."
-            echo "Please ensure the RuriOSS/rurima-aio repository has a stable release with a .zip asset."
+            echo "Attempted URL filters failed. Please manually verify the asset name in the RuriOSS/rurima-aio latest release."
             exit 1
           fi
           
@@ -122,7 +122,7 @@ jobs:
           # 压缩最终的 Magisk 模块
           cd linker_mod
           zip -qr ../linker_magisk_mod-${VERSION}.zip .
-          cd ..
+          cd 说
           
       - name: 8. Create GitHub Release and Upload Asset
         uses: softprops/action-gh-release@v2
