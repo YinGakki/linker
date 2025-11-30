@@ -32,7 +32,6 @@ jobs:
       
       - name: 3. Compile Linker (Self-Contained Single File for ARM64)
         run: |
-          # 编译 Linker，生成 linux-arm64 平台下自包含的单文件
           dotnet publish src/linker \
             -c Release \
             -f net8.0 \
@@ -42,86 +41,83 @@ jobs:
             -o ./linker_output
             
       - name: 4. Download Magisk Module Template
-        id: download_template
         run: |
-          # 使用 topjohnwu/magisk-module-template 仓库的 master 分支 ZIP 包
-          TEMPLATE_URL="https://github.com/topjohnwu/magisk-module-template/archive/master.zip"
-          echo "Downloading module template from: $TEMPLATE_URL"
+          # 使用 topjohnwu 的 Magisk Module Installer 作为基础 (包含 META-INF)
+          # 注意：这个仓库不包含 module.prop，我们需要自己创建
+          TEMPLATE_URL="https://github.com/topjohnwu/Magisk-Module-Installer/archive/master.zip"
           wget -O module-template.zip "$TEMPLATE_URL"
           
-      - name: 5. Prepare Module Structure (Extract and Configure)
+      - name: 5. Prepare Module Structure (Robust Extraction)
         run: |
-          # 1. 解压模板到临时目录
-          unzip module-template.zip -d module_template
+          # 1. 解压到临时目录
+          mkdir temp_extract
+          unzip module-template.zip -d temp_extract
           
-          # 2. 找到模板解压后的根目录 (通常是 magisk-module-template-master)
-          # 使用 find 确保即使目录名称不完全一致也能找到 module.prop
-          MODULE_ROOT_PATH=$(find module_template -maxdepth 2 -name 'module.prop' | xargs dirname)
+          # 2. 动态找到解压后的根目录 (通常是 Magisk-Module-Installer-master)
+          TEMPLATE_ROOT=$(ls temp_extract | head -n 1)
+          echo "Found template root: $TEMPLATE_ROOT"
           
-          if [ -z "$MODULE_ROOT_PATH" ]; then
-              echo "::error title=Template Root Not Found::Could not locate module.prop in the extracted template structure."
-              exit 1
-          fi
-          
-          echo "Template module structure found at: $MODULE_ROOT_PATH"
-          
-          # 3. 创建最终的模块集成目录，并将模板内容移动进去
+          # 3. 移动内容到 linker_mod
           mkdir linker_mod
-          mv "$MODULE_ROOT_PATH"/* linker_mod/
+          mv temp_extract/$TEMPLATE_ROOT/* linker_mod/
           
-          # 4. 更新 module.prop
-          MODULE_PROP_FILE="linker_mod/module.prop"
-          
+          # 4. 清理
+          rm -rf temp_extract module-template.zip
+
+      - name: 6. Generate Module Config and Scripts
+        run: |
           # 获取版本号
-          VERSION=$(echo ${{ github.ref }} | sed 's/refs\/tags\///g')
-          
-          # 替换模块 ID 和版本信息
-          sed -i 's/^id=.*/id=linker_rurima/g' $MODULE_PROP_FILE
-          sed -i 's/^name=.*/name=Linker Runner Module/g' $MODULE_PROP_FILE
-          sed -i "s/^version=.*/version=$VERSION/g" $MODULE_PROP_FILE
-          sed -i "s/^versionCode=.*/versionCode=$(date +%s)/g" $MODULE_PROP_FILE
-          sed -i 's/^description=.*/description=Runs the Linker binary via the Rurima-AIO environment./g' $MODULE_PROP_FILE
-
-      - name: 6. Integrate Linker Binary and Wrapper Script
-        run: |
-          MODULE_BIN_DIR="linker_mod/system/bin"
-          WRAPPER_FILE="$MODULE_BIN_DIR/linker-wrapper"
-          LINKER_BIN_NAME="linker"
-          
-          # 确保 bin 目录存在
-          mkdir -p "$MODULE_BIN_DIR"
-
-          # A. 移动 Linker 二进制文件
-          cp linker_output/$LINKER_BIN_NAME "$MODULE_BIN_DIR/$LINKER_BIN_NAME"
-          
-          # B. 创建 Linker 启动包装器脚本 (保持 rurima 兼容)
-          printf '#!/system/bin/sh\n' > "$WRAPPER_FILE"
-          printf '# 包装器确保 linker 在 rurima 兼容层中运行\n' >> "$WRAPPER_FILE"
-          printf '\n' >> "$WRAPPER_FILE"
-          printf 'RURIMA_BIN="/system/bin/rurima"\n' >> "$WRAPPER_FILE"
-          printf 'LINKER_BIN="/system/bin/%s"\n' "$LINKER_BIN_NAME" >> "$WRAPPER_FILE"
-          printf '\n' >> "$WRAPPER_FILE"
-          printf 'if [ -x "$RURIMA_BIN" ]; then\n' >> "$WRAPPER_FILE"
-          printf '    exec "$RURIMA_BIN" "$LINKER_BIN" "$@"\n' >> "$WRAPPER_FILE"
-          printf 'else\n' >> "$WRAPPER_FILE"
-          printf '    exec "$LINKER_BIN" "$@"\n' >> "$WRAPPER_FILE"
-          printf 'fi\n' >> "$WRAPPER_FILE"
-          printf '\n' >> "$WRAPPER_FILE"
-          printf 'exit 0\n' >> "$WRAPPER_FILE"
-          
-          # C. 赋予执行权限
-          chmod 755 "$WRAPPER_FILE"
-          chmod 755 "$MODULE_BIN_DIR/$LINKER_BIN_NAME"
-          
-      - name: 7. Finalize and Zip Module
-        run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             VERSION="${{ github.event.inputs.version }}"
           else
             VERSION=$(echo ${{ github.ref }} | sed 's/refs\/tags\///g')
           fi
           
-          echo "Building module version: $VERSION"
+          # A. 手动生成 module.prop (不再依赖 sed 修改不存在的文件)
+          # 使用 printf 避免 YAML 多行字符串的缩进错误
+          PROP_FILE="linker_mod/module.prop"
+          printf 'id=linker_rurima\n' > "$PROP_FILE"
+          printf 'name=Linker Runner Module\n' >> "$PROP_FILE"
+          printf "version=%s\n" "$VERSION" >> "$PROP_FILE"
+          printf "versionCode=%s\n" "$(date +%s)" >> "$PROP_FILE"
+          printf 'author=GithubAction\n' >> "$PROP_FILE"
+          printf 'description=Runs the Linker binary via the Rurima-AIO environment.\n' >> "$PROP_FILE"
+          
+          # B. 确保 customize.sh 存在 (如果模板没有)
+          touch linker_mod/customize.sh
+          
+          # C. 准备系统二进制目录
+          MODULE_BIN_DIR="linker_mod/system/bin"
+          mkdir -p "$MODULE_BIN_DIR"
+          
+          # D. 复制编译好的 Linker
+          cp linker_output/linker "$MODULE_BIN_DIR/"
+          
+          # E. 生成 linker-wrapper 脚本
+          WRAPPER_FILE="$MODULE_BIN_DIR/linker-wrapper"
+          printf '#!/system/bin/sh\n' > "$WRAPPER_FILE"
+          printf 'RURIMA_BIN="/system/bin/rurima"\n' >> "$WRAPPER_FILE"
+          printf 'LINKER_BIN="/system/bin/linker"\n' >> "$WRAPPER_FILE"
+          printf '\n' >> "$WRAPPER_FILE"
+          printf 'if [ -x "$RURIMA_BIN" ]; then\n' >> "$WRAPPER_FILE"
+          printf '    exec "$RURIMA_BIN" "$LINKER_BIN" "$@"\n' >> "$WRAPPER_FILE"
+          printf 'else\n' >> "$WRAPPER_FILE"
+          printf '    echo "Rurima not found, falling back..."\n' >> "$WRAPPER_FILE"
+          printf '    exec "$LINKER_BIN" "$@"\n' >> "$WRAPPER_FILE"
+          printf 'fi\n' >> "$WRAPPER_FILE"
+          
+          # F. 设置权限
+          chmod 755 "$WRAPPER_FILE"
+          chmod 755 "$MODULE_BIN_DIR/linker"
+
+      - name: 7. Finalize and Zip Module
+        run: |
+          # 获取版本号用于文件名
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION=$(echo ${{ github.ref }} | sed 's/refs\/tags\///g')
+          fi
           
           cd linker_mod
           zip -qr ../linker_magisk_mod-${VERSION}.zip .
@@ -136,9 +132,8 @@ jobs:
           body: |
             ## Linker Magisk 模块 ${{ github.event_name == 'workflow_dispatch' && format('Manual Build v{0}', github.event.inputs.version) || format('Release v{0}', github.ref_name) }}
             
-            此模块是一个 Linker 程序的封装，使用标准 Magisk 模板构建。它旨在与 RuriOSS/rurima-aio 兼容。
-            
             - **核心程序:** Linker (自包含 .NET 8.0/linux-arm64)
-            - **兼容层:** 启动脚本尝试调用 Rurima-AIO 的环境二进制文件。
+            - **基础模板:** TopJohnWu Magisk Module Installer
+            - **依赖:** RuriOSS/rurima-aio (需单独安装)
             
             **用法:** 重启后，在任何 Shell (ADB 或 Termux su) 中运行 `linker-wrapper`。
