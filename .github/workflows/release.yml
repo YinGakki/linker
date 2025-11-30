@@ -4,8 +4,8 @@ name: Magisk Module Build and Release
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+' # 仅在推送版本标签（例如 v1.0.0）时触发
-
+      - 'v[0-9]+.[0-9]+.[0-9]+' # 保留标签推送触发
+  
   # 新增：启用手动执行
   workflow_dispatch:
     inputs:
@@ -13,7 +13,6 @@ on:
         description: 'Module version (e.g., v1.0.0) - REQUIRED for manual runs.'
         required: true
         default: 'v-manual-build'
-
 
 jobs:
   build_module:
@@ -43,17 +42,23 @@ jobs:
             -p:PublishSingleFile=true \
             -o ./linker_output
             
-      - name: 4. Download Latest Rurima-AIO Template
+      - name: 4. Download Latest Rurima-AIO Template (FIXED)
         id: get_rurima_release
         run: |
-          # 查找 RuriOSS/rurima-aio 仓库的最新发布版本 ZIP 包链接
-          RURIMA_LATEST_URL=$(curl -s https://api.github.com/repos/RuriOSS/rurima-aio/releases/latest | jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url')
+          echo "Fetching latest Rurima-AIO release URL..."
+          
+          # 查找 RuriOSS/rurima-aio 仓库的最新发布版本 ZIP 包链接。
+          # 使用 head -n 1 确保即使 jq 返回多行也只取第一个URL。
+          RURIMA_LATEST_URL=$(curl -s https://api.github.com/repos/RuriOSS/rurima-aio/releases/latest | \
+            jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url' | head -n 1)
           
           if [ -z "$RURIMA_LATEST_URL" ]; then
             echo "Error: Could not find latest Rurima-AIO release ZIP URL."
+            echo "Please ensure the RuriOSS/rurima-aio repository has a stable release with a .zip asset."
             exit 1
           fi
           
+          echo "Found URL: $RURIMA_LATEST_URL"
           echo "RURIMA_LATEST_URL=$RURIMA_LATEST_URL" >> $GITHUB_OUTPUT
           wget -O rurima-aio.zip "$RURIMA_LATEST_URL"
 
@@ -73,7 +78,7 @@ jobs:
           # 替换模块 ID (重要)
           sed -i 's/^id=.*/id=linker_rurima/g' linker_mod/module.prop
 
-      - name: 6. Integrate Linker Binary and Wrapper Script (FIXED)
+      - name: 6. Integrate Linker Binary and Wrapper Script
         run: |
           MODULE_BIN_DIR="linker_mod/system/bin"
           WRAPPER_FILE="$MODULE_BIN_DIR/linker-wrapper"
@@ -81,7 +86,7 @@ jobs:
           # A. 移动 Linker 二进制文件到系统路径
           cp linker_output/linker "$MODULE_BIN_DIR/"
           
-          # B. 使用 printf 创建 Linker 启动包装器脚本 (这是最安全的 YAML 兼容方法)
+          # B. 使用 printf 创建 Linker 启动包装器脚本 (最安全的 YAML 兼容方法)
           printf '#!/system/bin/sh\n' > "$WRAPPER_FILE"
           printf '# 包装器确保 linker 在 rurima 兼容层中运行\n' >> "$WRAPPER_FILE"
           printf '\n' >> "$WRAPPER_FILE"
@@ -103,8 +108,16 @@ jobs:
           
       - name: 7. Finalize and Zip Module
         run: |
-          # 获取 Tag 名称作为版本号
-          VERSION=$(echo ${{ github.ref }} | sed 's/refs\/tags\///g')
+          # 根据触发事件确定版本号
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # 手动触发时，使用输入参数作为版本
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            # 标签触发时，从标签中提取版本
+            VERSION=$(echo ${{ github.ref }} | sed 's/refs\/tags\///g')
+          fi
+          
+          echo "Building module version: $VERSION"
           
           # 压缩最终的 Magisk 模块
           cd linker_mod
@@ -114,13 +127,15 @@ jobs:
       - name: 8. Create GitHub Release and Upload Asset
         uses: softprops/action-gh-release@v2
         with:
+          # 使用步骤 7 确定的版本号
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && format('manual-{0}', github.event.inputs.version) || github.ref }}
           files: linker_magisk_mod-*.zip
           prerelease: false
           body: |
-            ## Linker Magisk 模块 v${{ github.ref_name }}
+            ## Linker Magisk 模块 ${{ github.event_name == 'workflow_dispatch' && format('Manual Build v{0}', github.event.inputs.version) || format('Release v{0}', github.ref_name) }}
             
             此模块包含以下组件：
-            - **核心程序:** Linker v${{ github.ref_name }} (自包含 .NET 8.0/linux-arm64)
+            - **核心程序:** Linker (自包含 .NET 8.0/linux-arm64)
             - **兼容层:** 基于最新的 RuriOSS/rurima-aio Magisk 模块。
             
             **用法:** 重启后，在任何 Shell (ADB 或 Termux su) 中运行 `linker-wrapper`。
