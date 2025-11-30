@@ -32,6 +32,7 @@ jobs:
       
       - name: 3. Compile Linker (Self-Contained Single File for ARM64)
         run: |
+          # 编译 Linker
           dotnet publish src/linker \
             -c Release \
             -f net8.0 \
@@ -40,67 +41,61 @@ jobs:
             -p:PublishSingleFile=true \
             -o ./linker_output
             
-      - name: 4. Download Latest Rurima-AIO Template (FIXED for .tar)
-        id: get_rurima_release
-        run: |
-          echo "Fetching latest Rurima-AIO release URL..."
-          
-          JSON_RESPONSE=$(curl -sfL https://api.github.com/repos/RuriOSS/rurima-aio/releases/latest)
-          
-          echo "--- Rurima-AIO Asset Diagnostics ---"
-          echo "$JSON_RESPONSE" | jq '.assets[] | {name: .name, url: .browser_download_url}'
-          echo "-------------------------------------"
-          
-          # 策略：查找所有以 ".tar" 结尾的附件，并取第一个 URL。
-          RURIMA_LATEST_URL=$(echo "$JSON_RESPONSE" | \
-            jq -r '.assets[] | select(.name | endswith(".tar")) | .browser_download_url' | head -n 1)
-          
-          if [ -z "$RURIMA_LATEST_URL" ]; then
-            echo "::error title=Rurima-AIO Asset Not Found::Could not find a .tar asset in the latest RuriOSS/rurima-aio release."
-            echo "Action Failed. Please check the logs above to confirm the correct file extension."
-            exit 1
-          fi
-          
-          echo "Found URL: $RURIMA_LATEST_URL"
-          echo "RURIMA_LATEST_URL=$RURIMA_LATEST_URL" >> $GITHUB_OUTPUT
-          
-          # 下载文件，并保存为 .tar 格式
-          wget -O rurima-aio.tar "$RURIMA_LATEST_URL"
+      # --- 移除步骤 4: 不再下载 Rurima 模板 ---
 
-      - name: 5. Prepare Module Structure (Extract Tarball)
+      - name: 5. Create Magisk Module Structure and Files (NEW)
         run: |
-          # 1. 创建模块集成目录
-          mkdir linker_mod
+          MODULE_DIR="linker_mod"
           
-          # 2. 使用 tar 命令解压文件到 linker_mod
-          # --strip-components=1 用于移除 tarball 顶层目录，直接提取内容。
-          tar -xf rurima-aio.tar -C linker_mod --strip-components=1
+          # 创建基本目录结构
+          mkdir -p $MODULE_DIR/system/bin
           
-          # 3. 替换模块 ID (重要)
-          sed -i 's/^id=.*/id=linker_rurima/g' linker_mod/module.prop
+          # 创建 module.prop 文件
+          cat > $MODULE_DIR/module.prop << 'EOF'
+id=linker_rurima
+name=Linker Runner Module
+versionCode=1
+author=YourName
+description=Runs the Linker binary via the Rurima-AIO environment.
+EOF
+          
+          # 创建空的 customize.sh (Magisk 模块需要此文件)
+          touch $MODULE_DIR/customize.sh
+          
+          # 提取当前 Tag 作为版本号，并更新 module.prop
+          VERSION=$(echo ${{ github.ref }} | sed 's/refs\/tags\///g')
+          sed -i "s/^versionCode=.*/versionCode=$(date +%s)/g" $MODULE_DIR/module.prop
+          sed -i "s/^version=.*/version=$VERSION/g" $MODULE_DIR/module.prop
 
       - name: 6. Integrate Linker Binary and Wrapper Script
         run: |
           MODULE_BIN_DIR="linker_mod/system/bin"
           WRAPPER_FILE="$MODULE_BIN_DIR/linker-wrapper"
+          LINKER_BIN_NAME="linker" # 原始 Linker 名称
           
-          cp linker_output/linker "$MODULE_BIN_DIR/"
+          # A. 移动 Linker 二进制文件到系统路径
+          cp linker_output/$LINKER_BIN_NAME "$MODULE_BIN_DIR/$LINKER_BIN_NAME"
           
+          # B. 使用 printf 创建 Linker 启动包装器脚本
           printf '#!/system/bin/sh\n' > "$WRAPPER_FILE"
           printf '# 包装器确保 linker 在 rurima 兼容层中运行\n' >> "$WRAPPER_FILE"
           printf '\n' >> "$WRAPPER_FILE"
           printf 'RURIMA_BIN="/system/bin/rurima"\n' >> "$WRAPPER_FILE"
-          printf 'LINKER_BIN="/system/bin/linker"\n' >> "$WRAPPER_FILE"
+          printf 'LINKER_BIN="/system/bin/%s"\n' "$LINKER_BIN_NAME" >> "$WRAPPER_FILE"
           printf '\n' >> "$WRAPPER_FILE"
           printf 'if [ -x "$RURIMA_BIN" ]; then\n' >> "$WRAPPER_FILE"
+          printf '    # 使用 rurima 启动 linker，并传递所有参数\n' >> "$WRAPPER_FILE"
           printf '    exec "$RURIMA_BIN" "$LINKER_BIN" "$@"\n' >> "$WRAPPER_FILE"
           printf 'else\n' >> "$WRAPPER_FILE"
+          printf '    # 警告：如果 rurima 不可用，直接执行将失败 (ABI 冲突)\n' >> "$WRAPPER_FILE"
           printf '    exec "$LINKER_BIN" "$@"\n' >> "$WRAPPER_FILE"
           printf 'fi\n' >> "$WRAPPER_FILE"
           printf '\n' >> "$WRAPPER_FILE"
           printf 'exit 0\n' >> "$WRAPPER_FILE"
           
+          # C. 赋予 wrapper 脚本执行权限
           chmod 755 "$WRAPPER_FILE"
+          chmod 755 "$MODULE_BIN_DIR/$LINKER_BIN_NAME"
           
       - name: 7. Finalize and Zip Module
         run: |
@@ -112,7 +107,6 @@ jobs:
           
           echo "Building module version: $VERSION"
           
-          # 压缩最终的 Magisk 模块 (仍然使用 ZIP 格式用于 Magisk 安装)
           cd linker_mod
           zip -qr ../linker_magisk_mod-${VERSION}.zip .
           cd ..
@@ -126,8 +120,9 @@ jobs:
           body: |
             ## Linker Magisk 模块 ${{ github.event_name == 'workflow_dispatch' && format('Manual Build v{0}', github.event.inputs.version) || format('Release v{0}', github.ref_name) }}
             
-            此模块包含以下组件：
+            此模块是一个 Linker 程序的封装，依赖于设备上已安装的 RuriOSS/rurima-aio 模块。
+            
             - **核心程序:** Linker (自包含 .NET 8.0/linux-arm64)
-            - **兼容层:** 基于最新的 RuriOSS/rurima-aio Magisk 模块。
+            - **依赖:** RuriOSS/rurima-aio (需单独安装)
             
             **用法:** 重启后，在任何 Shell (ADB 或 Termux su) 中运行 `linker-wrapper`。
